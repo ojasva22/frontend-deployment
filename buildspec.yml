@@ -1,0 +1,11 @@
+version: 0.2
+
+phases:
+  build:
+    commands:
+      - echo "Starting the deployment process"
+      - echo "Copying files from GitHub repository to S3 bucket"
+      - aws s3 sync . s3://frontend-static-site --delete
+artifacts:
+  files:
+    - '**/*'

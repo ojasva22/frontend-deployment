@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Photo Management</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Photo Management</h1>
+
+    <!-- Upload Section -->
+    <h2>Upload Photo</h2>
+    <form id="upload-form">
+      <label for="photo-file">Choose a file:</label>
+      <input type="file" id="photo-file" accept="image/*" required>
+      <label for="custom-labels">Custom Labels (comma-separated):</label>
+      <input type="text" id="custom-labels" placeholder="e.g., cat, nature">
+      <button type="submit">Upload</button>
+    </form>
+    <p id="upload-status"></p>
+
+    <!-- Search Section -->
+    <h2>Search Photos</h2>
+    <form id="search-form">
+      <label for="search-query">Enter search query:</label>
+      <input type="text" id="search-query" placeholder="e.g., cat, nature" required>
+      <button type="submit">Search</button>
+    </form>
+    <div id="search-results"></div>
+  </div>
+
+  <!-- Include SDK Dependencies -->
+  <script src="https://sdk.amazonaws.com/js/aws-sdk-2.1358.0.min.js"></script>
+  <script src="lib/axios/dist/axios.standalone.js"></script>
+  <script src="lib/url-template/url-template.js"></script>
+  <script src="lib/CryptoJS/rollups/crypto-js.js"></script>
+  <script src="lib/CryptoJS/rollups/sha256.js"></script>
+  <script src="lib/CryptoJS/components/hmac.js"></script>
+  <script src="lib/CryptoJS/components/enc-base64.js"></script>
+  <script src="lib/apiGatewayCore/sigV4Client.js"></script>
+  <script src="lib/apiGatewayCore/apiGatewayClient.js"></script>
+  <script src="lib/apiGatewayCore/simpleHttpClient.js"></script>
+  <script src="lib/apiGatewayCore/utils.js"></script>
+  <script src="apigClient.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
