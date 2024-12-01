@@ -1,0 +1,212 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template to create Lambda functions, API Gateway, and S3 buckets.
+
+Resources:
+  # S3 Bucket for Frontend Hosting
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: frontend-static-site
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: error.html
+    DeletionPolicy: Retain
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: "s3:GetObject"
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+
+  # S3 Bucket for Storage
+  StorageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: photos-storage-bucket
+    DeletionPolicy: Retain
+
+  # IAM Role for Lambda Functions
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaS3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub "arn:aws:s3:::photos-storage-bucket"
+                  - !Sub "arn:aws:s3:::photos-storage-bucket/*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+
+  # Lambda Function: Index Photos
+  IndexPhotosFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: index-photos
+      Handler: index-photos.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import logging
+          from elasticsearch import Elasticsearch, RequestsHttpConnection
+          from requests_aws4auth import AWS4Auth
+
+          # Initialize AWS clients
+          s3_client = boto3.client('s3')
+          rekognition_client = boto3.client('rekognition')
+
+          # Elasticsearch configuration
+          host = "search-photos-blazu6w7o3fbf3woba73uvqu2a.aos.us-east-1.on.aws"
+          region = "us-east-1"
+
+          # AWS Requests Authentication for Elasticsearch
+          credentials = boto3.Session().get_credentials()
+          aws_auth = AWS4Auth(
+              credentials.access_key,
+              credentials.secret_key,
+              region,
+              'es',
+              session_token=credentials.token
+          )
+
+          es_client = Elasticsearch(
+              hosts=[{'host': host, 'port': 443}],
+              use_ssl=True,
+              verify_certs=True,
+              connection_class=RequestsHttpConnection,
+              http_auth=aws_auth
+          )
+
+          def lambda_handler(event, context):
+              try:
+                  print("Event:", json.dumps(event))
+                  bucket_name = event['Records'][0]['s3']['bucket']['name']
+                  object_key = event['Records'][0]['s3']['object']['key']
+
+                  head_object = s3_client.head_object(Bucket=bucket_name, Key=object_key)
+                  metadata = head_object.get('Metadata', {})
+                  custom_labels = metadata.get('customlabels', '')
+                  custom_labels_list = custom_labels.split(',') if custom_labels else []
+
+                  rekognition_response = rekognition_client.detect_labels(
+                      Image={'S3Object': {'Bucket': bucket_name, 'Name': object_key}},
+                      MaxLabels=10,
+                      MinConfidence=75
+                  )
+                  rekognition_labels = [label['Name'] for label in rekognition_response['Labels']]
+                  all_labels = list(set(rekognition_labels + custom_labels_list))
+
+                  created_timestamp = head_object['LastModified'].strftime('%Y-%m-%dT%H:%M:%S')
+                  document = {
+                      "objectKey": object_key,
+                      "bucket": bucket_name,
+                      "createdTimestamp": created_timestamp,
+                      "labels": all_labels
+                  }
+
+                  es_client.index(index='photos', id=object_key, body=document)
+                  return {'statusCode': 200, 'body': json.dumps(f"Successfully indexed photo {object_key}")}
+
+              except Exception as e:
+                  print(f"Error: {e}")
+                  return {'statusCode': 500, 'body': json.dumps(f"Error processing photo: {str(e)}")}
+
+  # Lambda Function: Search Photos
+  SearchPhotosFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: search-photos
+      Handler: search-photos.lambda_handler
+      Runtime: python3.9
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          from elasticsearch import Elasticsearch, RequestsHttpConnection
+          from requests_aws4auth import AWS4Auth
+
+          def lambda_handler(event, context):
+              try:
+                  query = event['queryStringParameters']['q']
+                  es_client = Elasticsearch(hosts=["https://search-photos-blazu6w7o3fbf3woba73uvqu2a.aos.us-east-1.on.aws"])
+                  response = es_client.search(index="photos", body={
+                      "query": {"match": {"labels": query}}
+                  })
+                  results = [{"objectKey": hit["_source"]["objectKey"], "labels": hit["_source"]["labels"]} for hit in response["hits"]["hits"]]
+                  return {"statusCode": 200, "body": json.dumps(results)}
+              except Exception as e:
+                  return {"statusCode": 500, "body": str(e)}
+
+  # API Gateway
+  APIGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: PhotosAPI
+
+  APIPhotosResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt APIGateway.RootResourceId
+      PathPart: photos
+      RestApiId: !Ref APIGateway
+
+  GetPhotosMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIPhotosResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SearchPhotosFunction.Arn}/invocations"
+
+  PostPhotosMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIPhotosResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${IndexPhotosFunction.Arn}/invocations"
+
+Outputs:
+  FrontendBucketURL:
+    Description: URL of the frontend static website
+    Value: !Sub "http://${FrontendBucket}.s3-website-${AWS::Region}.amazonaws.com"
+
+  APIEndpoint:
+    Description: API Gateway URL for PhotosAPI
+    Value: !Sub "https://${APIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod"
